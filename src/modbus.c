@@ -242,6 +242,74 @@ int modbus_send_raw_request(modbus_t *ctx, const uint8_t *raw_req, int raw_req_l
     return send_msg(ctx, req, req_length);
 }
 
+int modbus_send_raw_request_ex(modbus_t *ctx, const uint8_t *raw_req, int raw_req_length, uint8_t *rsp)
+{
+    sft_t sft;
+    uint8_t req[MAX_MESSAGE_LENGTH];
+    int req_length;
+
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (raw_req_length < 2 || raw_req_length > (MODBUS_MAX_PDU_LENGTH + 1)) {
+        /* The raw request must contain function and slave at least and
+           must not be longer than the maximum pdu length plus the slave
+           address. */
+        errno = EINVAL;
+        return -1;
+    }
+
+	// Fabricate a request
+	req_length = ctx->backend->build_request_basis(ctx, raw_req[1], 0, 0, req);
+
+    sft.slave = raw_req[0];
+    sft.function = raw_req[1];
+    /* Extract a valid TID from the fake request */
+    sft.t_id = ctx->backend->prepare_response_tid(req,&req_length);
+    /* This response function only sets the header so it's convenient here */
+    req_length = ctx->backend->build_response_basis(&sft, req);
+
+    if (raw_req_length > 2) {
+        /* Copy data after function code */
+        memcpy(req + req_length, raw_req + 2, raw_req_length - 2);
+        req_length += raw_req_length - 2;
+    }
+
+	if(send_msg(ctx, req, req_length) == req_length) {
+		int tries = 2;
+		int rc = 0;
+
+		// Attempt multiple reads...
+		while(tries--) {
+			rc = _modbus_receive_msg(ctx, rsp, MSG_CONFIRMATION);
+			// Read error, done.
+			if( rc == -1)
+				break;
+
+			// Get response txn id
+			int rsp_tid = ctx->backend->prepare_response_tid(rsp,&rc);
+
+			// Matches, so break;
+			if( sft.t_id == rsp_tid)
+				break;
+
+			// No match, if not "off by one" then record EMBBADDATA and break out
+			if( sft.t_id != rsp_tid+1 ) {
+				errno = EMBBADDATA;
+				rc = -1;
+				break;
+			}
+			// If a valid read with off-by-one txn id, retry.
+			printf("MODBUS: Retrying because of off-by-one txn id\n");
+		}
+		return rc;
+	} else {
+		return -1;
+	}
+}
+
 /*
  *  ---------- Request     Indication ----------
  *  | Client | ---------------------->| Server |

@@ -228,6 +228,7 @@ MODBUS_API modbus_mapping_t* modbus_mapping_new(int nb_bits, int nb_input_bits,
 MODBUS_API void modbus_mapping_free(modbus_mapping_t *mb_mapping);
 
 MODBUS_API int modbus_send_raw_request(modbus_t *ctx, const uint8_t *raw_req, int raw_req_length);
+MODBUS_API int modbus_send_raw_request_ex(modbus_t *ctx, const uint8_t *raw_req, int raw_req_length, uint8_t *rsp);
 
 MODBUS_API int modbus_receive(modbus_t *ctx, uint8_t *req);
 
@@ -290,6 +291,7 @@ MODBUS_API void modbus_set_float_badc(float f, uint16_t *dest);
 MODBUS_API void modbus_set_float_cdab(float f, uint16_t *dest);
 
 #include "modbus-tcp.h"
+#include "modbus-udp.h"
 #include "modbus-rtu.h"
 
 MODBUS_END_DECLS
