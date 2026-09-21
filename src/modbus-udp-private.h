@@ -21,6 +21,7 @@ typedef struct _modbus_udp {
        The transaction identifier is used to associate the future response
        with the request. This identifier is unique on each UDP connection. */
     uint16_t t_id;
+    uint16_t expected_t_id;   // 新增：当前期望的响应 TID
     /* UDP port */
     int port;
     /* IP address */

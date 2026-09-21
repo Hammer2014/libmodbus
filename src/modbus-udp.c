@@ -165,6 +165,9 @@ static int _modbus_udp_send_msg_pre(uint8_t *req, int req_length)
 
 static ssize_t _modbus_udp_send(modbus_t *ctx, const uint8_t *req, int req_length)
 {
+    modbus_udp_t *ctx_udp = ctx->backend_data;
+    // 记录当前请求的 TID
+    ctx_udp->expected_t_id = (req[0] << 8) | req[1];
     /* MSG_NOSIGNAL
        Requests not to send SIGPIPE on errors on stream oriented
        sockets when the other end breaks the connection.  The EPIPE
@@ -177,33 +180,56 @@ static int _modbus_udp_receive(modbus_t *ctx, uint8_t *req) {
 }
 
 static ssize_t _modbus_udp_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length) {
-	// Do some input buffer management.
-	modbus_udp_t *ctx_udp = ctx->backend_data;
-	if( ctx_udp->_u ) {
-		int len = ctx_udp->_u > rsp_length ? rsp_length : ctx_udp->_u;
-		memcpy(rsp, ctx_udp->buffer, (size_t) len);
-		ctx_udp->_u -= len;
-        // Shift the buffer.
-        memmove(ctx_udp->buffer,ctx_udp->buffer+len,(size_t)ctx_udp->_u);
-		return len;
-	} else {
-		if( rsp_length > MODBUS_UDP_MAX_ADU_LENGTH )
-			rsp_length = MODBUS_UDP_MAX_ADU_LENGTH;
-
-		int b;
-		ssize_t rc = ioctl(ctx->s,FIONREAD, &b);
-		if( !rc ) {
-			rc = recv(ctx->s, (char *)ctx_udp->buffer, (size_t)b, 0);
-			if(rc > 0 ) {
-				ssize_t len = rc > rsp_length ? rsp_length: rc;
-				memcpy(rsp, ctx_udp->buffer, (size_t) len);
-				ctx_udp->_u = (int)(rc - len);
-				memmove(ctx_udp->buffer,ctx_udp->buffer+len,(size_t)ctx_udp->_u);
-				return len;
-			}
-		}
-	}
-	return -1;
+    modbus_udp_t *ctx_udp = ctx->backend_data;
+    
+    // 如果内部缓冲区还有数据（不完整的数据报），先返回
+    if (ctx_udp->_u) {
+        int len = ctx_udp->_u > rsp_length ? rsp_length : ctx_udp->_u;
+        memcpy(rsp, ctx_udp->buffer, (size_t)len);
+        ctx_udp->_u -= len;
+        memmove(ctx_udp->buffer, ctx_udp->buffer + len, (size_t)ctx_udp->_u);
+        return len;
+    }
+    
+    // 循环接收，直到收到匹配 TID 的数据报或出错
+    for (;;) {
+        uint8_t buf[MODBUS_UDP_MAX_ADU_LENGTH];
+        ssize_t rc = recv(ctx->s, (char *)buf, sizeof(buf), 0);
+        
+        if (rc == -1) {
+            // EAGAIN/EWOULDBLOCK 表示没有数据了
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return -1;
+            }
+            return -1;
+        }
+        
+        if (rc < 2) {
+            // 太短，丢弃
+            continue;
+        }
+        
+        uint16_t recv_tid = (buf[0] << 8) | buf[1];
+        
+        // TID 不匹配，丢弃，继续等
+        if (recv_tid != ctx_udp->expected_t_id) {
+            if (ctx->debug) {
+                fprintf(stderr, "Discarding stale UDP response TID=0x%X (expected 0x%X)\n",
+                        recv_tid, ctx_udp->expected_t_id);
+            }
+            continue;
+        }
+        
+        // TID 匹配，返回
+        ssize_t len = rc > rsp_length ? rsp_length : rc;
+        memcpy(rsp, buf, (size_t)len);
+        if (rc > len) {
+            // 数据报比请求的多，剩余部分缓存起来（理论上不会发生）
+            ctx_udp->_u = (int)(rc - len);
+            memcpy(ctx_udp->buffer, buf + len, (size_t)ctx_udp->_u);
+        }
+        return len;
+    }
 }
 
 static int _modbus_udp_check_integrity(modbus_t *ctx, uint8_t *msg, const int msg_length)
