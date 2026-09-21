@@ -182,7 +182,7 @@ static int _modbus_udp_receive(modbus_t *ctx, uint8_t *req) {
 static ssize_t _modbus_udp_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length) {
     modbus_udp_t *ctx_udp = ctx->backend_data;
     
-    // 如果内部缓冲区还有数据（不完整的数据报），先返回
+    // 先处理内部缓冲区（不完整数据报的续读）
     if (ctx_udp->_u) {
         int len = ctx_udp->_u > rsp_length ? rsp_length : ctx_udp->_u;
         memcpy(rsp, ctx_udp->buffer, (size_t)len);
@@ -191,40 +191,70 @@ static ssize_t _modbus_udp_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length) {
         return len;
     }
     
-    // 循环接收，直到收到匹配 TID 的数据报或出错
+    struct timeval deadline;
+    gettimeofday(&deadline, NULL);
+    deadline.tv_sec  += ctx->response_timeout.tv_sec;
+    deadline.tv_usec += ctx->response_timeout.tv_usec;
+    if (deadline.tv_usec >= 1000000) {
+        deadline.tv_sec  += 1;
+        deadline.tv_usec -= 1000000;
+    }
+    
     for (;;) {
-        uint8_t buf[MODBUS_UDP_MAX_ADU_LENGTH];
-        ssize_t rc = recv(ctx->s, (char *)buf, sizeof(buf), 0);
-        
-        if (rc == -1) {
-            // EAGAIN/EWOULDBLOCK 表示没有数据了
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                return -1;
-            }
+        // 用 select 等待 socket 可读，剩余超时时间
+        struct timeval now, remain;
+        gettimeofday(&now, NULL);
+        remain.tv_sec  = deadline.tv_sec  - now.tv_sec;
+        remain.tv_usec = deadline.tv_usec - now.tv_usec;
+        if (remain.tv_usec < 0) {
+            remain.tv_sec  -= 1;
+            remain.tv_usec += 1000000;
+        }
+        if (remain.tv_sec < 0) {
+            errno = ETIMEDOUT;
             return -1;
         }
         
+        fd_set rset;
+        FD_ZERO(&rset);
+        FD_SET(ctx->s, &rset);
+        int s_rc = select(ctx->s + 1, &rset, NULL, NULL, &remain);
+        if (s_rc == -1) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (s_rc == 0) {
+            // 超时
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        
+        // socket 可读，读一个数据报
+        uint8_t buf[MODBUS_UDP_MAX_ADU_LENGTH];
+        ssize_t rc = recv(ctx->s, (char *)buf, sizeof(buf), 0);
+        if (rc == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                continue;   // 继续等
+            }
+            return -1;
+        }
         if (rc < 2) {
-            // 太短，丢弃
-            continue;
+            continue;   // 太短，丢弃
         }
         
         uint16_t recv_tid = (buf[0] << 8) | buf[1];
-        
-        // TID 不匹配，丢弃，继续等
         if (recv_tid != ctx_udp->expected_t_id) {
             if (ctx->debug) {
                 fprintf(stderr, "Discarding stale UDP response TID=0x%X (expected 0x%X)\n",
                         recv_tid, ctx_udp->expected_t_id);
             }
-            continue;
+            continue;   // 丢弃，继续等
         }
         
         // TID 匹配，返回
         ssize_t len = rc > rsp_length ? rsp_length : rc;
         memcpy(rsp, buf, (size_t)len);
         if (rc > len) {
-            // 数据报比请求的多，剩余部分缓存起来（理论上不会发生）
             ctx_udp->_u = (int)(rc - len);
             memcpy(ctx_udp->buffer, buf + len, (size_t)ctx_udp->_u);
         }
