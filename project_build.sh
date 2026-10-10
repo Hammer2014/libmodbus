@@ -55,7 +55,7 @@ declare -A TOOLCHAINS=(
 declare -A CROSS_PREFIXES=(
     [rv1126b]="aarch64-buildroot-linux-gnu"
     [rk3568]="aarch64-buildroot-linux-gnu"
-    [t113i]="arm-buildroot-linux-gnueabi"
+    [t113i]="arm-linux-gnueabi"
     [t113]="arm-buildroot-linux-gnu"
 )
 
@@ -84,7 +84,7 @@ SYSROOT="${TOOLCHAIN_ROOT}/${SYSROOT_PATHS[$PLATFORM]}"
 # ============================
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_PREFIX="/opt/libmodbus-${PLATFORM}"
-SOURCE_DIR="${SCRIPT_DIR}/libmodbus"
+SOURCE_DIR="${SCRIPT_DIR}"  # libmodbus 源码目录（当前目录）
 BUILD_DIR="${SCRIPT_DIR}/build-libmodbus-${PLATFORM}"
 
 # ============================
@@ -111,6 +111,17 @@ if [ ! -f "${SOURCE_DIR}/configure" ]; then
     echo "❌ configure script not found in:"
     echo "   ${SOURCE_DIR}"
     exit 1
+fi
+
+# ============================
+# 清理源码目录中的配置（如果需要）
+# ============================
+if [ "${CLEAN_BUILD}" = true ]; then
+    echo "🧹 Cleaning source directory..."
+    cd "${SOURCE_DIR}"
+    make distclean 2>/dev/null || true
+    rm -rf "${BUILD_DIR}"
+    echo "✅ Source directory cleaned"
 fi
 
 # ============================
@@ -151,12 +162,12 @@ echo "📌 Mode        : $( [ "${CLEAN_BUILD}" = true ] && echo 'CLEAN BUILD' ||
 echo "=========================================="
 
 # ============================
-# 执行构建
+# 执行构建（在构建目录中）
 # ============================
 cd "${BUILD_DIR}"
 
 echo ""
-echo "🔧 Running configure..."
+echo "🔧 Running configure from build directory..."
 "${SOURCE_DIR}/configure" "${CONFIGURE_ARGS[@]}"
 
 if [ $? -ne 0 ]; then
