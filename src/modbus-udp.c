@@ -508,7 +508,7 @@ int modbus_udp_listen(modbus_t *ctx, int nb_connection)
     }
 #endif
 
-    flags = SOCK_STREAM;
+    flags = SOCK_DGRAM;
 
 #ifdef SOCK_CLOEXEC
     flags |= SOCK_CLOEXEC;
